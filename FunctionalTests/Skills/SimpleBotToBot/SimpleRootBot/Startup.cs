@@ -34,7 +34,7 @@ namespace Microsoft.BotBuilderSamples.SimpleRootBot31
                 .AddNewtonsoftJson();
 
             // Configure credentials
-            services.AddSingleton<ICredentialProvider, ConfigurationCredentialProvider>();
+            services.AddSingleton<ICredentialProvider, MultipleCredentialProvider>();
 
             // Register the skills configuration class
             services.AddSingleton<SkillsConfiguration>();

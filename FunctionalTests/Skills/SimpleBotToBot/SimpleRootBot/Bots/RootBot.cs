@@ -3,7 +3,9 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
+using System.Security.Claims;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Bot.Builder;
@@ -20,12 +22,13 @@ namespace Microsoft.BotBuilderSamples.SimpleRootBot31.Bots
     {
         private readonly IStatePropertyAccessor<BotFrameworkSkill> _activeSkillProperty;
         private readonly string _botId;
+        private readonly ICredentialProvider _credentialProvider;
         private readonly ConversationState _conversationState;
         private readonly SkillHttpClient _skillClient;
         private readonly SkillsConfiguration _skillsConfig;
         private readonly BotFrameworkSkill _targetSkill;
 
-        public RootBot(ConversationState conversationState, SkillsConfiguration skillsConfig, SkillHttpClient skillClient, IConfiguration configuration)
+        public RootBot(ConversationState conversationState, SkillsConfiguration skillsConfig, SkillHttpClient skillClient, IConfiguration configuration, ICredentialProvider credentialProvider)
         {
             _conversationState = conversationState ?? throw new ArgumentNullException(nameof(conversationState));
             _skillsConfig = skillsConfig ?? throw new ArgumentNullException(nameof(skillsConfig));
@@ -35,10 +38,10 @@ namespace Microsoft.BotBuilderSamples.SimpleRootBot31.Bots
                 throw new ArgumentNullException(nameof(configuration));
             }
 
-            _botId = configuration.GetSection(MicrosoftAppCredentials.MicrosoftAppIdKey)?.Value;
-            if (string.IsNullOrWhiteSpace(_botId))
+            _credentialProvider = credentialProvider;
+            if (_credentialProvider.IsAuthenticationDisabledAsync().Result)
             {
-                throw new ArgumentException($"{MicrosoftAppCredentials.MicrosoftAppIdKey} is not set in configuration");
+                throw new ArgumentException("No MicrosoftAppIds found in configuration. Auth is required for Skills.");
             }
 
             // We use a single skill in this example.
@@ -126,14 +129,30 @@ namespace Microsoft.BotBuilderSamples.SimpleRootBot31.Bots
             // will have access to current accurate state.
             await _conversationState.SaveChangesAsync(turnContext, force: true, cancellationToken: cancellationToken);
 
+            // Get the botId from the claims for posting an Activity to the skill.
+            var botId = await GetValidBotId(turnContext);
+
             // route the activity to the skill
-            var response = await _skillClient.PostActivityAsync(_botId, targetSkill, _skillsConfig.SkillHostEndpoint, (Activity)turnContext.Activity, cancellationToken);
+            var response = await _skillClient.PostActivityAsync(botId, targetSkill, _skillsConfig.SkillHostEndpoint, (Activity)turnContext.Activity, cancellationToken);
 
             // Check response status
             if (!(response.Status >= 200 && response.Status <= 299))
             {
                 throw new HttpRequestException($"Error invoking the skill id: \"{targetSkill.Id}\" at \"{targetSkill.SkillEndpoint}\" (status is {response.Status}). \r\n {response.Body}");
             }
+        }
+
+        private async Task<string> GetValidBotId(ITurnContext turnContext)
+        {
+            var identity = turnContext.TurnState.Get<ClaimsIdentity>("BotIdentity");
+            var audienceClaim = identity.Claims.FirstOrDefault(c => c.Type == AuthenticationConstants.AudienceClaim)?.Value;
+
+            if (await _credentialProvider.IsValidAppIdAsync(audienceClaim))
+            {
+                return audienceClaim;
+            }
+
+            throw new ArgumentException("No MicrosoftAppIds found in configuration. Auth is required for Skills.");
         }
     }
 }

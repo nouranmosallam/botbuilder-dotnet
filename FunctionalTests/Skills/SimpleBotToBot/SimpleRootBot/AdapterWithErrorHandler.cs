@@ -5,6 +5,7 @@ using System;
 using Microsoft.Bot.Builder;
 using Microsoft.Bot.Builder.Integration.AspNet.Core;
 using Microsoft.Bot.Builder.TraceExtensions;
+using Microsoft.Bot.Connector.Authentication;
 using Microsoft.Bot.Schema;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -13,9 +14,18 @@ namespace Microsoft.BotBuilderSamples.SimpleRootBot31
 {
     public class AdapterWithErrorHandler : BotFrameworkHttpAdapter
     {
-        public AdapterWithErrorHandler(IConfiguration configuration, ILogger<BotFrameworkHttpAdapter> logger, ConversationState conversationState = null)
-            : base(configuration, logger)
+        public AdapterWithErrorHandler(ICredentialProvider credentialProvider, IConfiguration configuration, ILogger<BotFrameworkHttpAdapter> logger, ConversationState conversationState = null)
+            : base(credentialProvider, logger: logger)
         {
+            var openIdEndpoint = configuration.GetSection(AuthenticationConstants.BotOpenIdMetadataKey)?.Value;
+
+            if (!string.IsNullOrEmpty(openIdEndpoint))
+            {
+                // Indicate which Cloud we are using, for example, Public or Sovereign.
+                ChannelValidation.OpenIdMetadataUrl = openIdEndpoint;
+                GovernmentChannelValidation.OpenIdMetadataUrl = openIdEndpoint;
+            }
+
             OnTurnError = async (turnContext, exception) =>
             {
                 // Log any leaked exception from the application.
