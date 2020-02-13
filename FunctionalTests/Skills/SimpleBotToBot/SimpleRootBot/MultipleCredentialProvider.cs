@@ -91,5 +91,4 @@ namespace Microsoft.BotBuilderSamples.SimpleRootBot31
             public string MicrosoftAppPassword { get; set; }
         }
     }
-
 }

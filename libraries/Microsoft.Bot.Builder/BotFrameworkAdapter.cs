@@ -1244,7 +1244,7 @@ namespace Microsoft.Bot.Builder
         /// <returns>Connector client instance.</returns>
         private IConnectorClient CreateConnectorClient(string serviceUrl, AppCredentials appCredentials = null)
         {
-            var clientKey = $"{serviceUrl}{appCredentials?.MicrosoftAppId ?? string.Empty}";
+            var clientKey = $"{serviceUrl}{appCredentials?.MicrosoftAppId ?? string.Empty}{appCredentials?.OAuthScope ?? string.Empty}";
 
             return _connectorClients.GetOrAdd(clientKey, (key) =>
             {
@@ -1347,7 +1347,7 @@ namespace Microsoft.Bot.Builder
                 // We create a default claim that contains only the desired audience.
                 var defaultConnectorClaims = new List<Claim> { new Claim(AuthenticationConstants.AudienceClaim, audience) };
                 var connectorClaimsIdentity = new ClaimsIdentity(defaultConnectorClaims);
-                
+
                 // The CreateConnectorClientAsync will create a ConnectorClient with an associated MicrosoftAppId for that claim and will
                 // initialize the dictionaries that contain the cache instances.
                 await CreateConnectorClientAsync(serviceUrl, connectorClaimsIdentity, cancellationToken).ConfigureAwait(false);
