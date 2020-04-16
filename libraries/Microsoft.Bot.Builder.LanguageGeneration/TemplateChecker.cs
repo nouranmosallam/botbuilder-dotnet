@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.RegularExpressions;
 using AdaptiveExpressions;
 using Antlr4.Runtime;
 using Antlr4.Runtime.Misc;
@@ -13,20 +14,34 @@ namespace Microsoft.Bot.Builder.LanguageGeneration
     /// <summary>
     /// LG managed code checker.
     /// </summary>
-    internal class StaticChecker : LGTemplateParserBaseVisitor<List<Diagnostic>>
+    internal class TemplateChecker : LGTemplateParserBaseVisitor<List<Diagnostic>>
     {
+        /// <summary>
+        /// option regex.
+        /// </summary>
+        public static readonly Regex OptionRegex = new Regex(@"> *!#(.*)");
+
+        /// <summary>
+        /// Import regex.
+        /// </summary>
+        public static readonly Regex ImportRegex = new Regex(@"\[(.*)\]\((.*)\)");
+
+        private static readonly Regex IdentifierRegex = new Regex(@"^[0-9a-zA-Z_]+$");
+
         private readonly ExpressionParser baseExpressionParser;
         private readonly Templates templates;
-        private Template currentTemplate;
+        private Template template;
 
         private IExpressionParser _expressionParser;
 
         /// <summary>
-        /// Initializes a new instance of the <see cref="StaticChecker"/> class.
+        /// Initializes a new instance of the <see cref="TemplateChecker"/> class.
         /// </summary>
-        /// <param name="lg">the lg wihch would be checked.</param>
-        public StaticChecker(Templates lg)
+        /// <param name="lg">the lg.</param>
+        /// <param name="template">the template wihch would be checked.</param>
+        public TemplateChecker(Templates lg, Template template)
         {
+            this.template = template;
             this.templates = lg;
             baseExpressionParser = lg.ExpressionParser;
         }
@@ -53,42 +68,39 @@ namespace Microsoft.Bot.Builder.LanguageGeneration
         /// <returns>report result.</returns>
         public List<Diagnostic> Check()
         {
-            var result = new List<Diagnostic>();
+            var diagnostics = new List<Diagnostic>();
 
-            if (templates.AllTemplates.Count == 0)
+            var templateContext = template.SourceRange.ParseTree as LGFileParser.TemplateDefinitionContext;
+
+            if (this.templates.Any(u => u.Name == template.Name))
             {
-                var diagnostic = new Diagnostic(Range.DefaultRange, TemplateErrors.NoTemplate, DiagnosticSeverity.Warning, templates.Id);
-                result.Add(diagnostic);
-                return result;
+                var diagnostic = BuildTemplatesDiagnostic(TemplateErrors.DuplicatedTemplateInSameTemplate(template.Name), templateContext.templateNameLine());
+                this.templates.Diagnostics.Add(diagnostic);
             }
 
-            foreach (var template in templates)
+            // checker duplicated in different files
+            foreach (var reference in templates.References)
             {
-                currentTemplate = template;
-                var templateDiagnostics = new List<Diagnostic>();
-
-                // checker duplicated in different files
-                foreach (var reference in templates.References)
+                var sameTemplates = reference.Where(u => u.Name == template.Name);
+                foreach (var sameTemplate in sameTemplates)
                 {
-                    var sameTemplates = reference.Where(u => u.Name == template.Name);
-                    foreach (var sameTemplate in sameTemplates)
-                    {
-                        var startLine = template.SourceRange.Range.Start.Line;
-                        var range = new Range(startLine, 0, startLine, template.Name.Length + 1);
-                        var diagnostic = new Diagnostic(range, TemplateErrors.DuplicatedTemplateInDiffTemplate(sameTemplate.Name, sameTemplate.SourceRange.Source), source: templates.Id);
-                        templateDiagnostics.Add(diagnostic);
-                    }
+                    var startLine = template.SourceRange.Range.Start.Line;
+                    var range = new Range(startLine, 0, startLine, template.Name.Length + 1);
+                    var diagnostic = new Diagnostic(range, TemplateErrors.DuplicatedTemplateInDiffTemplate(sameTemplate.Name, sameTemplate.SourceRange.Source), source: templates.Id);
+                    diagnostics.Add(diagnostic);
                 }
-
-                if (templateDiagnostics.Count == 0 && template.TemplateBodyParseTree != null)
-                {
-                    templateDiagnostics.AddRange(Visit(template.TemplateBodyParseTree));
-                }
-
-                result.AddRange(templateDiagnostics);
             }
 
-            return result;
+            CheckTemplateName(template.Name, templateContext.templateNameLine());
+            CheckTemplateParameters(template.Parameters, templateContext.templateNameLine());
+            template.TemplateBodyParseTree = CheckTemplateBody(template.Name, template.Body, templateContext.templateBody(), template.SourceRange.Range.Start.Line);
+
+            if (diagnostics.Count == 0 && template.TemplateBodyParseTree != null)
+            {
+                diagnostics.AddRange(Visit(template.TemplateBodyParseTree));
+            }
+
+            return diagnostics;
         }
 
         public override List<Diagnostic> VisitNormalTemplateBody([NotNull] LGTemplateParser.NormalTemplateBodyContext context)
@@ -352,6 +364,53 @@ namespace Microsoft.Bot.Builder.LanguageGeneration
             return result;
         }
 
+        private LGTemplateParser.TemplateBodyContext CheckTemplateBody(string templateName, string templateBody, LGFileParser.TemplateBodyContext context, int startLine)
+        {
+            if (string.IsNullOrWhiteSpace(templateBody))
+            {
+                var diagnostic = BuildTemplatesDiagnostic(TemplateErrors.NoTemplateBody(templateName), context, DiagnosticSeverity.Warning);
+                this.templates.Diagnostics.Add(diagnostic);
+            }
+            else
+            {
+                try
+                {
+                    return AntlrParseTemplate(templateBody, startLine);
+                }
+                catch (TemplateException e)
+                {
+                    e.Diagnostics.ToList().ForEach(u => this.templates.Diagnostics.Add(u));
+                }
+            }
+
+            return null;
+        }
+
+        private void CheckTemplateParameters(List<string> parameters, LGFileParser.TemplateNameLineContext context)
+        {
+            foreach (var parameter in parameters)
+            {
+                if (!IdentifierRegex.IsMatch(parameter))
+                {
+                    var diagnostic = BuildTemplatesDiagnostic(TemplateErrors.InvalidTemplateName, context);
+                    this.templates.Diagnostics.Add(diagnostic);
+                }
+            }
+        }
+
+        private void CheckTemplateName(string templateName, ParserRuleContext context)
+        {
+            var functionNameSplitDot = templateName.Split('.');
+            foreach (var id in functionNameSplitDot)
+            {
+                if (!IdentifierRegex.IsMatch(id))
+                {
+                    var diagnostic = BuildTemplatesDiagnostic(TemplateErrors.InvalidTemplateName, context);
+                    this.templates.Diagnostics.Add(diagnostic);
+                }
+            }
+        }
+
         private List<Diagnostic> CheckExpression(string exp, ParserRuleContext context, string prefix = "")
         {
             var result = new List<Diagnostic>();
@@ -392,10 +451,32 @@ namespace Microsoft.Bot.Builder.LanguageGeneration
             DiagnosticSeverity severity = DiagnosticSeverity.Error,
             ParserRuleContext context = null)
         {
-            var lineOffset = this.currentTemplate != null ? this.currentTemplate.SourceRange.Range.Start.Line : 0;
-            message = this.currentTemplate != null ? $"[{this.currentTemplate.Name}]" + message : message;
+            var lineOffset = this.template != null ? this.template.SourceRange.Range.Start.Line : 0;
+            message = this.template != null ? $"[{this.template.Name}]" + message : message;
             var range = context == null ? new Range(1 + lineOffset, 0, 1 + lineOffset, 0) : context.ConvertToRange(lineOffset);
             return new Diagnostic(range, message, severity, templates.Id);
+        }
+
+        private LGTemplateParser.TemplateBodyContext AntlrParseTemplate(string templateBody, int lineOffset)
+        {
+            var input = new AntlrInputStream(templateBody);
+            var lexer = new LGTemplateLexer(input);
+            lexer.RemoveErrorListeners();
+
+            var tokens = new CommonTokenStream(lexer);
+            var parser = new LGTemplateParser(tokens);
+            parser.RemoveErrorListeners();
+            var listener = new ErrorListener(this.templates.Id, lineOffset);
+
+            parser.AddErrorListener(listener);
+            parser.BuildParseTree = true;
+
+            return parser.context().templateBody();
+        }
+
+        private Diagnostic BuildTemplatesDiagnostic(string errorMessage, ParserRuleContext context, DiagnosticSeverity severity = DiagnosticSeverity.Error)
+        {
+            return new Diagnostic(context.ConvertToRange(), errorMessage, severity, this.templates.Id);
         }
     }
 }
